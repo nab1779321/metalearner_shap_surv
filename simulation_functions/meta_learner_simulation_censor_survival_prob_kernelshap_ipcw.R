@@ -4,63 +4,62 @@ rsf_HTE_X <- function(data=dat,testdat=mydata$data,testdat_kernelshap=mydata_ker
   data1 <- data[which(data$Treatment==1),-c(which(names(data)=="Treatment"), which(names(data)=="sim"))]
   data0 <- data[which(data$Treatment==0),-c(which(names(data)=="Treatment"), which(names(data)=="sim"))]
   
-  #Step1: Fit 2 RFSRC models
+  data0_surv<-ifelse(data0$Time>=time.interest,1,ifelse(data0$Time<time.interest & data0$Event==1,0,NA))
+  data1_surv<-ifelse(data1$Time>=time.interest,1,ifelse(data1$Time<time.interest & data1$Event==1,0,NA))
+  
+  #Step1: fit 2 outcome models
   rfsrc_data1 <-
     grf::survival_forest(X=as.matrix(data1[,which(names(data1) %in% c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))]),Y=as.vector(data1$Time),D=as.vector(data1$Event),prediction.type="Nelson-Aalen",num.trees = 500,num.threads = 1) # OOB estimates
   
   rfsrc_data0 <-
     grf::survival_forest(X=as.matrix(data0[,which(names(data0) %in% c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))]),Y=as.vector(data0$Time),D=as.vector(data0$Event),prediction.type="Nelson-Aalen",num.trees = 500,num.threads = 1) # OOB estimates
   
-  if (xtype==0){ # use rfsrc_data1 and rfsrc_data0 to impute observed survival probability
-    #Step 2: calculate D1 and D2
-    # D1=mu1(1)-mu0(1)
-    predict_rfsrc_median01 <- predict(rfsrc_data0, newdata = data1[,which(names(data1)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))],failure.times=rep(time.interest,dim(data1)[1]), prediction.times="time")$predictions # rep(time.interest,dim(data1)[1])
-    predict_rfsrc_median11 <- predict(rfsrc_data1, failure.times=rep(time.interest,dim(data1)[1]), prediction.times="time")$predictions
-    data1$d1<- predict_rfsrc_median11-predict_rfsrc_median01
-    
-    # D0=mu1(0)-mu0(0)
-    predict_rfsrc_median00 <- predict(rfsrc_data0, failure.times=rep(time.interest,dim(data0)[1]), prediction.times="time")$predictions
-    predict_rfsrc_median10 <- predict(rfsrc_data1, newdata=data0[,which(names(data0)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data0)[1]), prediction.times="time")$predictions
-    data0$d0<- predict_rfsrc_median10-predict_rfsrc_median00
-    
-  }
+  # step2: predict d1 and d0
+  predict_rfsrc_median01 <-  predict(rfsrc_data0, newdata = data1[,which(names(data1)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data1)[1]),prediction.times="time")$predictions
+  data1$d1<- data1_surv-predict_rfsrc_median01
   
+  predict_rfsrc_median10 <-  predict(rfsrc_data1, newdata=data0[,which(names(data0)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data0)[1]), prediction.times="time")$predictions
+  data0$d0<- predict_rfsrc_median10-data0_surv
+  
+  # step 3: ipcw
   if (xtype==2){ # use IPCW on complete cases
-    # KM IPCW: 10 fold cv
-    U <- pmin(data$Time, time.interest)                         # truncated follow-up time by t0
+   
+    U <- pmin(data$Time, time.interest)   
+    C.hat <- rep(NA, length(fold.id))                      
     if (IPCW.method == "KM") { # KM as IPCW method
-      fold.id <- sample(rep(seq(k.folds), length = nrow(data)))
-      C.hat <- rep(NA, length(fold.id))
       for (z in 1:k.folds) {
         c.fit <- survival::survfit(survival::Surv(data$Time[!fold.id == z], 1 - data$Event[!fold.id == z]) ~ 1)
         kmc <- summary(c.fit, times = U[fold.id == z])
         C.hat[fold.id == z] <- kmc$surv[match(U[fold.id == z], kmc$time)]
       }
+      C.hat[C.hat<0.05] <- 0.05
+      idx.trt <- which(data$Treatment==1)
+      C.hat.trt <- C.hat[idx.trt]
+      C.hat.trt.cen <- C.hat.trt[!is.na(data1_surv)]
+      
+      idx.ctrl <- which(data$Treatment==0)
+      C.hat.ctrl <- C.hat[idx.ctrl]
+      C.hat.ctrl.cen <- C.hat.ctrl[!is.na(data0_surv)]
+    }else if(IPCW.method == "RSF"){
+      data.ipcw <- data
+      data.ipcw$Event.cen <- 1-data.ipcw$Event
+      
+      c.fit <- grf::survival_forest(X=as.matrix(data.ipcw[,which(names(data.ipcw) %in% c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))]),Y=as.vector(data.ipcw$Time),D=as.vector(data.ipcw$Event.cen),prediction.type="Nelson-Aalen",num.trees = 500,num.threads = 1) # OOB estimates
+      C.hat <- predict(c.fit, failure.times=U, prediction.times="time")$predictions
+      C.hat[C.hat<0.05] <- 0.05
+      
+      idx.trt <- which(data$Treatment==1)
+      C.hat.trt <- C.hat[idx.trt]
+      C.hat.trt.cen <- C.hat.trt[!is.na(data1_surv)]
+      
+      idx.ctrl <- which(data$Treatment==0)
+      C.hat.ctrl <- C.hat[idx.ctrl]
+      C.hat.ctrl.cen <- C.hat.ctrl[!is.na(data0_surv)]
     }
-    
-    # 
-    data0_surv<-ifelse(data0$Time>=time.interest,1,ifelse(data0$Time<time.interest & data0$Event==1,0,NA))
-    data1_surv<-ifelse(data1$Time>=time.interest,1,ifelse(data1$Time<time.interest & data1$Event==1,0,NA))
-    
-    idx.trt <- which(data$Treatment==1)
-    C.hat.trt <- C.hat[idx.trt]
-    C.hat.trt.cen <- C.hat.trt[!is.na(data1_surv)]
-    
-    idx.ctrl <- which(data$Treatment==0)
-    C.hat.ctrl <- C.hat[idx.ctrl]
-    C.hat.ctrl.cen <- C.hat.ctrl[!is.na(data0_surv)]
-    
-    predict_rfsrc_median01 <-  predict(rfsrc_data0, newdata = data1[,which(names(data1)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data1)[1]),prediction.times="time")$predictions
-    data1$d1<- data1_surv-predict_rfsrc_median01
-    
-    # D0=mu1(0)-mu0(0)
-    predict_rfsrc_median10 <-  predict(rfsrc_data1, newdata=data0[,which(names(data0)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data0)[1]), prediction.times="time")$predictions
-    data0$d0<- predict_rfsrc_median10-data0_surv
-    
+        
   }
   
-  
-  #Step 3: model d0 and d1
+  #Step 4: model d0 and d1
   if (IPCW==T){ # xtype must equal to 2.
     if (pseudo_reg_separate_trt==T){
       if (pseudo_reg=="weighted_lasso"){
@@ -184,7 +183,7 @@ rsf_HTE_M <- function(data=dat,testdat=mydata$data,testdat_kernelshap=mydata_ker
   ### random forest
   if (est_pi==1){
     
-    if (propensity_method=="correct_logistic"){ # not cv version
+    if (propensity_method=="correct_logistic"){ 
       rf <- glm(Treatment~., family = "binomial"(link = "logit"),data = data[,which(names(data)%in%c(propensity_method_X,"Treatment"))])
       data$pred.pi <- predict(rf,type='response')
     }else if(propensity_method=="regression_forest"){ # throw in all X's in random forest; OOB prediction on training data
@@ -198,18 +197,24 @@ rsf_HTE_M <- function(data=dat,testdat=mydata$data,testdat_kernelshap=mydata_ker
   
   #### modified outcome
   if (impute_type==2){ # > time.interest, 1; < time.interest, 0; ipcw on complete cases
-    # KM IPCW: 10 fold cv
-    U <- pmin(data$Time, time.interest)                         # truncated follow-up time by t0
+
+    U <- pmin(data$Time, time.interest) 
+    C.hat <- rep(NA, length(fold.id))                        # truncated follow-up time by t0
     if (IPCW.method == "KM") { # KM as IPCW method
-      fold.id <- sample(rep(seq(k.folds), length = nrow(data)))
-      C.hat <- rep(NA, length(fold.id))
       for (z in 1:k.folds) {
         c.fit <- survival::survfit(survival::Surv(data$Time[!fold.id == z], 1 - data$Event[!fold.id == z]) ~ 1)
         kmc <- summary(c.fit, times = U[fold.id == z])
         C.hat[fold.id == z] <- kmc$surv[match(U[fold.id == z], kmc$time)]
       }
+    }else if(IPCW.method == "RSF"){
+      data.ipcw <- data
+      data.ipcw$Event.cen <- 1-data.ipcw$Event
+      
+      c.fit <- grf::survival_forest(X=as.matrix(data.ipcw[,which(names(data.ipcw) %in% c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))]),Y=as.vector(data.ipcw$Time),D=as.vector(data.ipcw$Event.cen),prediction.type="Nelson-Aalen",num.trees = 500,num.threads = 1) # OOB estimates
+      C.hat <- predict(c.fit, failure.times=U, prediction.times="time")$predictions
     }
     
+    C.hat[C.hat<0.05] <- 0.05
     data_surv<-ifelse(data$Time>=time.interest,1,ifelse(data$Time<time.interest & data$Event==1,0,NA))
     C.hat.cen <- C.hat[!is.na(data_surv)]
     
@@ -223,7 +228,7 @@ rsf_HTE_M <- function(data=dat,testdat=mydata$data,testdat_kernelshap=mydata_ker
         Y_M <- data_surv * (data$Treatment*wi - (1-data$Treatment)*(1-wi)) 
       }
       
-    }
+    } 
     
   }
   
@@ -259,18 +264,20 @@ rsf_HTE_DR_Kennedy <- function(data=dat,testdat=mydata$data,testdat_kernelshap=m
   data1 <- data[which(data$Treatment==1),-c(which(names(data)=="Treatment"), which(names(data)=="sim"))]
   data0 <- data[which(data$Treatment==0),-c(which(names(data)=="Treatment"), which(names(data)=="sim"))]
   
-  #Step1: Fit 2 RFSRC models; OOB estimation
+  #Step1: Fit 2 RSF models; OOB estimation
     rfsrc_data1 <-
       grf::survival_forest(X=as.matrix(data1[,which(names(data1) %in% c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))]),Y=as.vector(data1$Time),D=as.vector(data1$Event),prediction.type="Nelson-Aalen",num.trees = 500,num.threads = 1) # OOB estimates
     
     rfsrc_data0 <-
       grf::survival_forest(X=as.matrix(data0[,which(names(data0) %in% c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))]),Y=as.vector(data0$Time),D=as.vector(data0$Event),prediction.type="Nelson-Aalen",num.trees = 500,num.threads = 1) # OOB estimates
 
-
+    data$predict_rfsrc_median0 <- predict(rfsrc_data0, newdata=data[,which(names(data)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data)[1]), prediction.times="time")$predictions 
+    data$predict_rfsrc_median1 <- predict(rfsrc_data1, newdata=data[,which(names(data)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data)[1]), prediction.times="time")$predictions 
+    
   #Step 2: construct pseudo outcome
   if (est_pi==1){
     
-    if (propensity_method=="correct_logistic"){ # not cv version
+    if (propensity_method=="correct_logistic"){ 
       rf <- glm(Treatment~., family = "binomial"(link = "logit"),data = data[,which(names(data)%in%c(propensity_method_X,"Treatment"))])
       data$pi.hat <- predict(rf,type='response')
     }else if(propensity_method=="regression_forest"){ # throw in all X's in random forest; OOB prediction on training data
@@ -282,28 +289,32 @@ rsf_HTE_DR_Kennedy <- function(data=dat,testdat=mydata$data,testdat_kernelshap=m
     data$pi.hat <- rep(propensity,dim(data)[1])
   }
   
-  data$predict_rfsrc_median0 <- predict(rfsrc_data0, newdata=data[,which(names(data)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data)[1]), prediction.times="time")$predictions 
-  data$predict_rfsrc_median1 <- predict(rfsrc_data1, newdata=data[,which(names(data)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data)[1]), prediction.times="time")$predictions 
-  
   data$I<-ifelse(data$Time>=time.interest,1,ifelse(data$Time<time.interest & data$Event==1,0,NA))
   
-  data$pseudo <-(data$Treatment*wi+(1-data$Treatment)*(-1*wi))*(data$I-data$Treatment*data$predict_rfsrc_median1-(1-data$Treatment)*data$predict_rfsrc_median0) + data$predict_rfsrc_median1-data$predict_rfsrc_median0 
+  data$pseudo <-((data$Treatment-data$pi.hat)/(data$pi.hat*(1-data$pi.hat)))*(data$I-data$Treatment*data$predict_rfsrc_median1-(1-data$Treatment)*data$predict_rfsrc_median0) + data$predict_rfsrc_median1-data$predict_rfsrc_median0 
   
   # step3: regress pseudo outcome on covariates
   if (impute_type==2){
-    # KM IPCW: 10 fold cv
-    U <- pmin(data$Time, time.interest)                         # truncated follow-up time by t0
+  
+    U <- pmin(data$Time, time.interest)   
+    C.hat <- rep(NA, length(fold.id))                        # truncated follow-up time by t0
     if (IPCW.method == "KM") { # KM as IPCW method
-      fold.id <- sample(rep(seq(k.folds), length = nrow(data)))
-      C.hat <- rep(NA, length(fold.id))
       for (z in 1:k.folds) {
         c.fit <- survival::survfit(survival::Surv(data$Time[!fold.id == z], 1 - data$Event[!fold.id == z]) ~ 1)
         kmc <- summary(c.fit, times = U[fold.id == z])
         C.hat[fold.id == z] <- kmc$surv[match(U[fold.id == z], kmc$time)]
       }
+    }else if(IPCW.method == "RSF"){
+      data.ipcw <- data
+      data.ipcw$Event.cen <- 1-data.ipcw$Event
+      
+      c.fit <- grf::survival_forest(X=as.matrix(data.ipcw[,which(names(data.ipcw) %in% c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))]),Y=as.vector(data.ipcw$Time),D=as.vector(data.ipcw$Event.cen),prediction.type="Nelson-Aalen",num.trees = 500,num.threads = 1) # OOB estimates
+      C.hat <- predict(c.fit, failure.times=U, prediction.times="time")$predictions
+      
     }
-    
+    C.hat[C.hat<0.05] <- 0.05
     C.hat.cen <- C.hat[!is.na(data$I)]
+
   }
   
   if (IPCW==T){
@@ -358,10 +369,10 @@ rsf_HTE_R <- function(data=dat,testdat=mydata$data,testdat_kernelshap=mydata_ker
   
   rfsrc_data0 <-
     grf::survival_forest(X=as.matrix(data0[,which(names(data0) %in% c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))]),Y=as.vector(data0$Time),D=as.vector(data0$Event),prediction.type="Nelson-Aalen",num.trees = 500,num.threads = 1) # OOB estimates
-  
-  #### construct m
   data$s0_hat <- predict(rfsrc_data0, newdata=data[,which(names(data)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data)[1]), prediction.times="time")$predictions # summary of s0_hat on training data: 0.6 to 0.8
   data$s1_hat <- predict(rfsrc_data1, newdata=data[,which(names(data)%in%c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))], failure.times=rep(time.interest,dim(data)[1]), prediction.times="time")$predictions # summary of s0_hat on training data: 0.5 to 0.9
+  
+  #### construct m
   data$m_hat <- data$pred.pi*data$s1_hat+(1-data$pred.pi)*data$s0_hat
 
   #### create pseudo outcome
@@ -371,19 +382,26 @@ rsf_HTE_R <- function(data=dat,testdat=mydata$data,testdat_kernelshap=mydata_ker
   #### create censoring distribution
   if (impute_type==2){
     # KM IPCW: 10 fold cv
-    U <- pmin(data$Time, time.interest)                         # truncated follow-up time by t0
+    U <- pmin(data$Time, time.interest)   
+    C.hat <- rep(NA, length(fold.id))                         # truncated follow-up time by t0
     if (IPCW.method == "KM") { # KM as IPCW method
-      fold.id <- sample(rep(seq(k.folds), length = nrow(data)))
-      C.hat <- rep(NA, length(fold.id))
       for (z in 1:k.folds) {
         c.fit <- survival::survfit(survival::Surv(data$Time[!fold.id == z], 1 - data$Event[!fold.id == z]) ~ 1)
         kmc <- summary(c.fit, times = U[fold.id == z])
         C.hat[fold.id == z] <- kmc$surv[match(U[fold.id == z], kmc$time)]
       }
+    }else if(IPCW.method == "RSF"){
+      data.ipcw <- data
+      data.ipcw$Event.cen <- 1-data.ipcw$Event
+      
+      c.fit <- grf::survival_forest(X=as.matrix(data.ipcw[,which(names(data.ipcw) %in% c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))]),Y=as.vector(data.ipcw$Time),D=as.vector(data.ipcw$Event.cen),prediction.type="Nelson-Aalen",num.trees = 500,num.threads = 1) # OOB estimates
+      C.hat <- predict(c.fit, failure.times=U, prediction.times="time")$predictions
+      
     }
 
   }
-
+  C.hat[C.hat<0.05] <- 0.05
+  
   #### weight
   weight <- (1/C.hat)*((data$Treatment - data$pred.pi)^2)
   weight.cen <-  weight[!is.na(data$I)]
@@ -450,19 +468,25 @@ rsf_HTE_D <- function(data=dat,testdat=mydata$data,testdat_kernelshap=mydata_ker
   
   #### create censoring distribution
   if (impute_type==2){
-    # KM IPCW: 10 fold cv
+    
+    C.hat <- rep(NA, length(fold.id))
     U <- pmin(data$Time, time.interest)                         # truncated follow-up time by t0
     if (IPCW.method == "KM") { # KM as IPCW method
-      fold.id <- sample(rep(seq(k.folds), length = nrow(data)))
-      C.hat <- rep(NA, length(fold.id))
       for (z in 1:k.folds) {
         c.fit <- survival::survfit(survival::Surv(data$Time[!fold.id == z], 1 - data$Event[!fold.id == z]) ~ 1)
         kmc <- summary(c.fit, times = U[fold.id == z])
         C.hat[fold.id == z] <- kmc$surv[match(U[fold.id == z], kmc$time)]
       }
+    }else if(IPCW.method == "RSF"){
+      data.ipcw <- data
+      data.ipcw$Event.cen <- 1-data.ipcw$Event
+      
+      c.fit <- grf::survival_forest(X=as.matrix(data.ipcw[,which(names(data.ipcw) %in% c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"))]),Y=as.vector(data.ipcw$Time),D=as.vector(data.ipcw$Event.cen),prediction.type="Nelson-Aalen",num.trees = 500,num.threads = 1) # OOB estimates
+      C.hat <- predict(c.fit, failure.times=U, prediction.times="time")$predictions
     }
     
   }
+  C.hat[C.hat<0.05] <- 0.05
   
   #### weight
   weight <- (1/C.hat)*(2*data$Treatment-1)*(data$Treatment*(1/4)*wi+(1-data$Treatment)*(-1/4)*wi)
