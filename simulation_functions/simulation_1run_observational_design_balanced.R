@@ -1,7 +1,7 @@
-##===========================================================================================================================================================================================================================================================================#
-# Simulation code for observational, Linear propensity, use indicator as observed Y, KM ipcw for censoring KM, pseudo reg. as rf, estimate propensity using RF, conditional survival prob: RSF; kernel shap with 100 test point and 100 randomly sampled trained for bg data #
+##=================================================#
+# Simulation code for balanded observational study #
 # Author: Na Bo                                                                                                                                                                                                                                                              #
-#============================================================================================================================================================================================================================================================================#
+#==================================================#
 ### scenario 1
 #setwd("your working directory containing simulation functions")
 library(survival)
@@ -17,15 +17,20 @@ library(kernelshap)
 source("meta_learner_simulation_censor_survival_prob_kernelshap_ipcw.R")
 source("weibull_true.R")
 
-# load simulation data
-load(paste0("your working directory containing simulated data","/balanced_setting1_traindata1.RData")) # change data for different settings
-load(paste0("your working directory containing simulated data","/observational_10p1000n10000test_balanced_scenario1.RData"))
-load(paste0("your working directory containing simulated data","/observational_10p1000n100test_kernelshap_balanced_scenario1.RData"))
+# load simulation data for balanced observational study with 30% independent censoring in scenario 1
+load(paste0("your working directory containing simulated data","/balanced_indep_cen30_setting1_traindata1.RData"))
+load(paste0("your working directory containing simulated data","/observational_10p1000n10000test_balanced_indep_cen30_scenario1.RData"))
+load(paste0("your working directory containing simulated data","/observational_10p1000n100test_kernelshap_balanced_indep_cen30_scenario1.RData"))
+
+# load simulation data for balanced observational study with 30% covariate-dependent censoring in scenario 1
+# load(paste0("your working directory containing simulated data","/balanced_cov_dep_cen30_setting1_traindata1.RData")) 
+# load(paste0("your working directory containing simulated data","/observational_10p1000n10000test_balanced_cov_dep_cen30_scenario1.RData"))
+# load(paste0("your working directory containing simulated data","/observational_10p1000n100test_kernelshap_balanced_cov_dep_cen30_scenario1.RData"))
 
 set.seed(100871+1+15213) 
 tt<-12
 
-# run meta-learners
+# run meta-learners; use KM for IPCW; change KM to RSF in IPCW.method option for using RSF in IPCW
 rsf_X<-rsf_HTE_X(data=dat,testdat=testdat,testdat_kernelshap=testdat_shap,kernelshap_bg=testdat_shap[,which(names(testdat_shap$data)%in%c("V1", "V2","V3","V4", "V5","V6", "V7", "V8","V9", "V10","Treatment"))],ntrees=1000,time.interest=tt,xtype=2,k.folds=10,IPCW.method="KM",IPCW=T,pseudo_reg_separate_trt=T,pseudo_reg="weighted_RF",est_pi=1, propensity_method="regression_forest",propensity_method_X=c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"), propensity=0.5)
 rsf_M <- rsf_HTE_M(data=dat,testdat=testdat,testdat_kernelshap=testdat_shap,kernelshap_bg=testdat_shap[,which(names(testdat_shap)%in%c("V1", "V2","V3","V4", "V5","V6", "V7", "V8","V9", "V10","Treatment"))],ntrees=1000,time.interest=tt,IPCW=T,IPCW.method="KM",k.folds=10,impute_type=2,est_pi=1,propensity_method="regression_forest",propensity_method_X=c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"), propensity=0.5,pseudo_reg="weighted_RF")
 rsf_DR <- rsf_HTE_DR_Kennedy(data=dat,testdat=testdat,testdat_kernelshap=testdat_shap,kernelshap_bg=testdat_shap[,which(names(testdat_shap)%in%c("V1", "V2","V3","V4", "V5","V6", "V7", "V8","V9", "V10","Treatment"))],ntrees=1000,time.interest=tt,impute_type=2,IPCW=T,IPCW.method = "KM",k.folds=10,est_pi=1,propensity_method="regression_forest",propensity_method_X=c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10"),propensity=0.5,pseudo_reg="weighted_RF")
