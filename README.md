@@ -1,5 +1,7 @@
 # metalearner_shap_surv
-This repository contains key functions for paper titled "Evaluating meta-learners to analyze treatment heterogeneity in survival data: application to electronic health records of pediatric asthma care in COVID-19 pandemic".
+This repository contains key functions for paper:
+
+Bo, N., Jeong, J.-H., Forno, E. and Ding, Y. (2025), Evaluating Meta-Learners to Analyze Treatment Heterogeneity in Survival Data: Application to Electronic Health Records of Pediatric Asthma Care in COVID-19 Pandemic. Statistics in Medicine, 44: e10333. https://doi.org/10.1002/sim.10333 [Published paper](https://onlinelibrary.wiley.com/doi/10.1002/sim.10333)
 
 ## “simulated_data” folder contains exmple data for simulations:
 (1) balanced_setting1_traindata1.RData is training data for one simulation run under balanced observational study with 30% independent censoring in scenario 1. \
